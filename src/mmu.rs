@@ -81,6 +81,8 @@ impl Mmu {
         }
     }
 
+    // Little Endian.
+    // 0xABCD, low_byte = CD, high_byte = AB
     pub fn read_word(&self, addr: u16) -> u16 {
         let low_byte = self.read_byte(addr) as u16;
         let high_byte = self.read_byte(addr + 1) as u16;

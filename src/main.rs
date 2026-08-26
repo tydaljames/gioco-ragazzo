@@ -1,5 +1,6 @@
 mod mmu;
+mod cpu;
 
 fn main() {
-    println!("Hello, world!");
+    println!("Game Boy emulator booting up!");
 }
