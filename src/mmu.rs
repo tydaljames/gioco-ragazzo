@@ -66,6 +66,19 @@ impl Mmu {
                 self.vram[index] = val;
             }
 
+            // Intercept Serial Output for Blargg's Tests
+            0xFF01 => {
+                self.hram[(addr - 0xFF80) as usize] = val;
+            }
+            0xFF01 => {
+                self.hram[(addr - 0xFF80) as usize] = val;
+                if val == 0x81 {
+                    let char_data = self.read_byte(0xFF01) as char;
+                    print!("{}", char_data); //Print the character to the terminal
+                }
+            }
+
+
             // Remove this?
             0xC000..=0xDFFF => {
                 let index = (addr - 0xC000) as usize;

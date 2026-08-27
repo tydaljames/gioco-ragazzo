@@ -202,7 +202,7 @@ impl Cpu {
                 let cb_opcode = self.mmu.read_byte(self.pc);
                 self.pc = self.pc.wrapping_add(1);
 
-                self.execute_cb(cb_opcode);
+                self.execute_cb(cb_opcode)
             }
 
 
@@ -227,6 +227,21 @@ impl Cpu {
                 self.pc.wrapping_sub(1)
             )
         }
+    }
+
+    pub fn debug_print_state(&self) {
+        // Read upcoming opcode without advancing the PC
+        let opcode = self.mmu.read_byte(self.pc);
+
+        // Print the PC, Opcode, and all Registers in a clean format
+        println!(
+            "A: {:02X} F: {:02X} B: {:02X} C: {:02X} D: {:02X} E: {:02X} H: {:02X} L: {:02X} SP: {:04X} PC: 00:{:04X} ({:02X})",
+            self.registers.a, self.registers.f,
+            self.registers.b, self.registers.c,
+            self.registers.d, self.registers.e,
+            self.registers.h, self.registers.l,
+            self.sp, self.pc, opcode
+        );
     }
 }
 
