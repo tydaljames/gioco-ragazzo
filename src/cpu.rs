@@ -92,11 +92,11 @@ impl Registers {
         }
     }
 
-    pub fn get_hc_flag(&self) -> bool {
+    pub fn get_half_carry_flag(&self) -> bool {
         // Check if bit 5 is 1
         (self.f & 0b0010_0000) != 0
     }
-    pub fn set_hc_flag(&mut self, value: bool) {
+    pub fn set_half_carry_flag(&mut self, value: bool) {
         if value {
             self.f |= 0b0010_0000;
         }
@@ -154,6 +154,78 @@ impl Cpu {
         match opcode {
             // NOP (0x00): No Operation
             0x00 => 4, //Takes 4 T-cycles, does nothing
+
+            // LD B, d8 (LD into register from memory)
+            0x06 => {
+                let value = self.mmu.read_byte(self.pc);
+                self.pc = self.pc.wrapping_add(1);
+                self.registers.b = value;
+                8
+            }
+
+            // LD A, B (LD into register from register)
+            0x78 => {
+                self.registers.a = self.registers.b;
+                4
+            }
+
+            // Pattern C: Arithmetic & Flag Updates (INC A)
+            // Example: 0x3C — INC A (Increment register A by 1)
+            // When performing math, you must update the flags register (F):
+            //     Zero Flag (Z): Set if result becomes 0.
+            //     Subtract Flag (N): Cleared (false) because this was addition/increment.
+            //     Half-Carry Flag (H): Set if lower 4 bits overflow ((a & 0x0F) == 0x0F).
+            0x3C => {
+                let old_val = self.registers.a;
+                let new_val = old_val.wrapping_add(1);
+                self.registers.a = new_val;
+
+                // Set/clear flags
+                self.registers.set_zero_flag(new_val == 0);
+                self.registers.set_sub_flag(false);
+                self.registers.set_half_carry_flag((old_val & 0x0F) == 0x0F);
+
+                4
+            }
+
+            // JP a16 (Jump to 16-bit address)
+            0xC3 => {
+                let target_addr = self.mmu.read_word(self.pc);
+                self.pc = target_addr;
+
+                16 // 16 T-cycles (4 fetch opcode, 8 read 16-bit target, 4 internal CPU step)
+            }
+
+            // Prefix byte. Read from secondary 256 set list of opcodes when given this opcode.
+            0xCB => {
+                // Read the secondary opcode byte
+                let cb_opcode = self.mmu.read_byte(self.pc);
+                self.pc = self.pc.wrapping_add(1);
+
+                self.execute_cb(cb_opcode);
+            }
+
+
+            // Add opcode cases here later
+
+            // Crash handler for unwritten opcodes
+            _ => panic!(
+                "Unimplemented opcode 0x{:02X} at address 0x{:04X}",
+                opcode,
+                self.pc.wrapping_sub(1)
+            )
+        }
+    }
+
+    // Handles cb opcodes.
+    fn execute_cb(&mut self, opcode: u8) -> u8 {
+        match opcode {
+            // Crash handler for unwritten opcodes
+            _ => panic!(
+                "Unimplemented opcode 0x{:02X} at address 0x{:04X}",
+                opcode,
+                self.pc.wrapping_sub(1)
+            )
         }
     }
 }
