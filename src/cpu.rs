@@ -46,12 +46,17 @@ impl Registers {
     }
 
     pub fn get_hl(&self) -> u16 {
-        ((self.h as u16) << 8) | (self.l as u16)
+        let val = ((self.h as u16) << 8) | (self.l as u16);
+        // print!("Got HL with val {}. ", val);
+
+        val
     }
 
     pub fn set_hl(&mut self, value: u16) {
         self.h = ((value & 0xFF00) >> 8) as u8;
         self.l = (value & 0x00FF) as u8;
+
+        // print!("Set H with val {}, L with val {}.\n", self.h, self.l);
     }
 
     pub fn get_af(&self) -> u16 {
@@ -162,10 +167,9 @@ impl Cpu {
     }
 
     pub fn step(&mut self) -> u8 {
-
-        // if self.halted {
-        //     return 4
-        // }
+        if self.halted {
+            return 4
+        }
 
         // 1. FETCH: Read byte at PC
         let opcode = self.mmu.read_byte(self.pc);
@@ -192,18 +196,25 @@ impl Cpu {
         match x {
             // x = 00: Miscellaneous / Control / 16-bit Block
             0 => {
-                self.opcodes_x1(y, z)
+                self.opcodes_x0(y, z)
             }
 
             // x == 01: LD r1, r2 (Load into r1 from r2)
             1 => {
                 // SPECIAL: Halt instruction. Has a known bug in actual hardware. May need to review later!
                 if y == 6 && z == 6 {
+                    // print!("HALT. y = 6, z = 6");
                     self.halted = true;
                     return 4;
                 }
 
                 let value = self.read_reg_8bit(z);
+
+                // print!("LD {} into {} from {}. f flag set as {:#08b} -- ", value, y, z, self.registers.f);
+                if y != 6 && z != 6 {
+                    // print!("\n")
+                }
+
                 self.write_reg_8bit(y, value);
 
                 if y == 6 || z == 6 {8} else {4}
@@ -224,14 +235,14 @@ impl Cpu {
 
             // Crash handler for unwritten opcodes
             _ => panic!(
-                "Unimplemented CB opcode 0x{:02X} at address 0x{:04X}",
+                "Unimplemented opcode 0x{:02X} at address 0x{:04X}",
                 opcode,
                 self.pc.wrapping_sub(1)
             )
         }
     }
 
-    fn opcodes_x1(&mut self, y: u8, z: u8) -> u8 {
+    fn opcodes_x0(&mut self, y: u8, z: u8) -> u8 {
         match z {
             0 => {
                 // z = 0: NOP, STOP, and Relative Jumps
@@ -254,6 +265,7 @@ impl Cpu {
                         12
                     }
                     4..=7 => { // JR cc, d8 (Conditional Relative Jumps)
+                        // print!("Jumping");
                         let offset = self.mmu.read_byte(self.pc) as i8;
                         self.pc = self.pc.wrapping_add(1);
 
@@ -480,14 +492,65 @@ impl Cpu {
     fn opcodes_x3(&mut self, y: u8, z: u8) -> u8 {
         match z {
             0 => {
-                // z = 0: Conditional Returns (RET cc)
-                // y specifies the condition: 0=NZ, 1=Z, 2=NC, 3=C
-                if self.check_condition(y) {
-                    let target = self.stack_pop();
-                    self.pc = target;
-                    20 // Return taken is slow
-                } else {
-                    8  // Return not taken is fast
+                match y {
+                    0..=3 => {
+                        // z = 0: Conditional Returns (RET cc)
+                        // y specifies the condition: 0=NZ, 1=Z, 2=NC, 3=C
+                        if self.check_condition(y) {
+                            let target = self.stack_pop();
+                            self.pc = target;
+                            20 // Return taken is slow
+                        } else {
+                            8  // Return not taken is fast
+                        }
+                    }
+                    4 => {
+                        // 0xE0: LDH (a8), A (Also known as LD (0xFF00 + a8), A)
+                        let offset = self.mmu.read_byte(self.pc) as u16;
+                        self.pc = self.pc.wrapping_add(1);
+                        self.mmu.write_byte(0xFF00 + offset, self.registers.a);
+                        12
+                    }
+                    5 => {
+                        // 0xE8: ADD SP, r8 (Signed 8-bit offset)
+                        let offset = self.mmu.read_byte(self.pc) as i8 as i16 as u16;
+                        self.pc = self.pc.wrapping_add(1);
+                        let sp = self.sp;
+                        self.sp = sp.wrapping_add(offset);
+
+                        self.registers.set_zero_flag(false);
+                        self.registers.set_sub_flag(false);
+
+                        // Hardware Quirk: SP operations calculate carry/half-carry on the lower byte
+                        let un_offset = (offset as u8) as u16;
+                        self.registers.set_half_carry_flag((sp & 0x0F) + (un_offset & 0x0F) > 0x0F);
+                        self.registers.set_carry_flag((sp & 0xFF) + (un_offset & 0xFF) > 0xFF);
+                        16
+                    }
+                    6 => {
+                        // 0xF0: LDH A, (a8) (Also known as LD A, (0xFF00 + a8))
+                        let offset = self.mmu.read_byte(self.pc) as u16;
+                        self.pc = self.pc.wrapping_add(1);
+                        self.registers.a = self.mmu.read_byte(0xFF00 + offset);
+                        12
+                    }
+                    7 => {
+                        // 0xF8: LD HL, SP+r8 (Signed 8-bit offset)
+                        let offset = self.mmu.read_byte(self.pc) as i8 as i16 as u16;
+                        self.pc = self.pc.wrapping_add(1);
+                        let sp = self.sp;
+                        let result = sp.wrapping_add(offset);
+                        self.registers.set_hl(result);
+
+                        self.registers.set_zero_flag(false);
+                        self.registers.set_sub_flag(false);
+
+                        let un_offset = (offset as u8) as u16;
+                        self.registers.set_half_carry_flag((sp & 0x0F) + (un_offset & 0x0F) > 0x0F);
+                        self.registers.set_carry_flag((sp & 0xFF) + (un_offset & 0xFF) > 0xFF);
+                        12
+                    }
+                    _ => unreachable!(),
                 }
             }
 
@@ -536,15 +599,46 @@ impl Cpu {
             }
 
             2 => {
-                // z = 2: Conditional Jumps (JP cc, a16)
-                let addr = self.mmu.read_word(self.pc);
-                self.pc = self.pc.wrapping_add(2);
+                match y {
+                    0..=3 => {
+                        // 0xC2, 0xCA, 0xD2, 0xDA: JP cc, a16
+                        let addr = self.mmu.read_word(self.pc);
+                        self.pc = self.pc.wrapping_add(2);
 
-                if self.check_condition(y) {
-                    self.pc = addr;
-                    16 // Jump taken
-                } else {
-                    12 // Jump not taken
+                        if self.check_condition(y) {
+                            self.pc = addr;
+                            16 // Jump taken
+                        } else {
+                            12 // Jump not taken
+                        }
+                    }
+                    4 => {
+                        // 0xE2: LD (C), A (Also known as LD (0xFF00 + C), A)
+                        let c = self.read_reg_8bit(1) as u16; // read_reg_8bit(1) grabs register C
+                        self.mmu.write_byte(0xFF00 + c, self.registers.a);
+                        8
+                    }
+                    5 => {
+                        // 0xEA: LD (a16), A
+                        let addr = self.mmu.read_word(self.pc);
+                        self.pc = self.pc.wrapping_add(2);
+                        self.mmu.write_byte(addr, self.registers.a);
+                        16
+                    }
+                    6 => {
+                        // 0xF2: LD A, (C) (Also known as LD A, (0xFF00 + C))
+                        let c = self.read_reg_8bit(1) as u16;
+                        self.registers.a = self.mmu.read_byte(0xFF00 + c);
+                        8
+                    }
+                    7 => {
+                        // 0xFA: LD A, (a16)
+                        let addr = self.mmu.read_word(self.pc);
+                        self.pc = self.pc.wrapping_add(2);
+                        self.registers.a = self.mmu.read_byte(addr);
+                        16
+                    }
+                    _ => unreachable!(),
                 }
             }
 
@@ -572,7 +666,7 @@ impl Cpu {
                         self.ime = true;
                         4
                     }
-                    // y = 2 through 7 are illegal opcodes on the Game Boy
+                    // y = 2 through 5 are illegal opcodes on the Game Boy
                     _ => panic!("Illegal opcode encountered at 0x{:04X}. x = {}, y = {}, z = {}", self.pc.wrapping_sub(1), 3, y, z)
                 }
             }
@@ -849,12 +943,13 @@ impl Cpu {
             }
             7 => { // CP A, n (Compare)
                 // Compare is exactly like SUB, but it ONLY updates flags (doesn't save to A)
+                // print!("Compare! ");
                 let result = a.wrapping_sub(operand);
 
                 self.registers.set_zero_flag(result == 0);
                 self.registers.set_sub_flag(true);
                 self.registers.set_half_carry_flag((a & 0x0F) < (operand & 0x0F));
-                self.registers.set_carry_flag(a < operand);
+                self.registers.set_carry_flag((a as u16) < (operand as u16));
             }
             _ => unreachable!(),
         }

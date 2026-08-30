@@ -20,6 +20,8 @@ pub struct Mmu {
     wram: [u8; 0x2000], // 8 KB working RAM
     hram: [u8; 0x7F], // 127 bytes of high-ram (fast CPU operations)
     ie_register: u8, // Single byte for interrupts
+    serial_data: u8,
+    serial_control: u8,
 }
 
 impl Mmu {
@@ -31,26 +33,38 @@ impl Mmu {
             wram: [0; 0x2000],
             hram: [0; 0x7F],
             ie_register: 0,
+            serial_data: 0,
+            serial_control: 0,
         }
     }
 
     pub fn read_byte(&self, addr: u16) -> u8 {
         match addr {
+            // Ignore write attempts to ROM
             0x0000..=0x7FFF => self.cartridge.rom[addr as usize],
+
+            // Video RAM (VRAM)
             0x8000..=0x9FFF => {
                 let index = (addr - 0x8000) as usize;
                 self.vram[index]
             }
 
-            // Remove this?
+            // Work RAM (WRAM)
             0xC000..=0xDFFF => {
                 let index = (addr - 0xC000) as usize;
                 self.wram[index]
             }
+
+            0xFF01 => self.serial_data,
+            0xFF02 => self.serial_control,
+
+            // High RAM (HRAM)
             0xFF80..=0xFFFE => {
                 let index = (addr - 0xFF80) as usize;
                 self.hram[index]
             }
+
+            // Interrupt Enable Register (IE)
             0xFFFF => self.ie_register,
 
             _ => 0xFF
@@ -61,35 +75,45 @@ impl Mmu {
         match addr {
             // Ignore write attempts to ROM
             0x0000..=0x7FFF => {},
+
+            // Video RAM (VRAM)
             0x8000..=0x9FFF => {
                 let index = (addr - 0x8000) as usize;
                 self.vram[index] = val;
             }
 
-            // Intercept Serial Output for Blargg's Tests
-            0xFF01 => {
-                self.hram[(addr - 0xFF80) as usize] = val;
-            }
-            0xFF01 => {
-                self.hram[(addr - 0xFF80) as usize] = val;
-                if val == 0x81 {
-                    let char_data = self.read_byte(0xFF01) as char;
-                    print!("{}", char_data); //Print the character to the terminal
-                }
-            }
-
-
-            // Remove this?
+            // Work RAM (WRAM)
             0xC000..=0xDFFF => {
                 let index = (addr - 0xC000) as usize;
                 self.wram[index] = val;
             }
+
+            // Intercept Serial Output for Blargg's Tests
+            0xFF01 => {
+                self.serial_data = val;
+            }
+            0xFF02 => {
+                self.serial_control = val;
+                if val == 0x81 {
+                    let char_data = self.serial_data as char;
+                    print!("{}", self.serial_data as char);
+
+                    // Flush stdout so the text appears in your terminal immediately
+                    use std::io::Write;
+                    std::io::stdout().flush().unwrap();
+                }
+            }
+
+            // High RAM (HRAM)
             0xFF80..=0xFFFE => {
                 let index = (addr - 0xFF80) as usize;
                 self.hram[index] = val;
             }
+
+            // Interrupt Enable Register (IE)
             0xFFFF => self.ie_register = val,
 
+            // Do nothing for all other unimplemented memory regions (I/O, Echo RAM, OAM, etc.)
             _ => {},
         }
     }
