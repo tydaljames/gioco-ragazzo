@@ -131,6 +131,7 @@ pub struct Cpu {
     pub mmu: Mmu,
     pub halted: bool,
     pub ime: bool,
+    pub enabling_ime: bool,
 }
 
 impl Cpu {
@@ -142,6 +143,7 @@ impl Cpu {
             mmu,
             halted: false,
             ime: false,
+            enabling_ime: false,
         }
     }
 
@@ -167,20 +169,58 @@ impl Cpu {
     }
 
     pub fn step(&mut self) -> u8 {
+        // 1. HALT WAKE-UP
         if self.halted {
-            return 4
+            let ie = self.mmu.read_byte(0xFFFF);
+            let if_reg = self.mmu.read_byte(0xFF0F);
+
+            if (ie & if_reg & 0x1F) != 0 {
+                self.halted = false;
+            } else {
+                return 4; // Keep sleeping
+            }
         }
 
-        // 1. FETCH: Read byte at PC
+        // 2. INTERRUPT DISPATCHER
+        if self.ime {
+            let ie = self.mmu.read_byte(0xFFFF);
+            let mut if_reg = self.mmu.read_byte(0xFF0F);
+            let requested = ie & if_reg & 0x1F;
+
+            if requested != 0 {
+                for i in 0..5 {
+                    if (requested & (1 << i)) != 0 {
+                        // Disable master interrupts
+                        self.ime = false;
+
+                        // Clear the specific interrupt flag we are servicing
+                        if_reg &= !(1 << i);
+                        self.mmu.write_byte(0xFF0F, if_reg);
+
+                        // Push current PC to stack
+                        self.stack_push(self.pc);
+
+                        // Jump to the interrupt vector (0x40, 0x48, 0x50, 0x58, 0x60)
+                        self.pc = 0x0040 + (i as u16 * 8);
+
+                        // Servicing an interrupt consumes 20 cycles
+                        return 20;
+                    }
+                }
+            }
+        }
+
+        // 3. FETCH & DECODE
         let opcode = self.mmu.read_byte(self.pc);
-
-        // Advance PC to next byte
         self.pc = self.pc.wrapping_add(1);
-
-        // 2. DECODE and EXECUTE
         let cycles = self.execute(opcode);
 
-        // 3. RETURN T-CYCLES (used to later sync graphics and timers)
+        // 4. DELAYED IME ENABLE
+        if self.enabling_ime {
+            self.ime = true;
+            self.enabling_ime = false;
+        }
+
         cycles
     }
 
@@ -203,7 +243,7 @@ impl Cpu {
             1 => {
                 // SPECIAL: Halt instruction. Has a known bug in actual hardware. May need to review later!
                 if y == 6 && z == 6 {
-                    // print!("HALT. y = 6, z = 6");
+                    print!("HALT. y = 6, z = 6");
                     self.halted = true;
                     return 4;
                 }
@@ -663,7 +703,8 @@ impl Cpu {
                     }
                     7 => {
                         // EI (Enable Interrupts)
-                        self.ime = true;
+                        self.enabling_ime = true;
+                        // self.ime = true;
                         4
                     }
                     // y = 2 through 5 are illegal opcodes on the Game Boy
@@ -1036,7 +1077,3 @@ impl OpcodeDecoder {
         opcode & 0b111
     }
 }
-
-
-// af = 0xABCD
-//

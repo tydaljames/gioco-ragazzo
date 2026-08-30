@@ -19,6 +19,7 @@ pub struct Mmu {
     vram: [u8; 0x2000], // 8,196 bytes/ 8 KB video RAM
     wram: [u8; 0x2000], // 8 KB working RAM
     hram: [u8; 0x7F], // 127 bytes of high-ram (fast CPU operations)
+    if_register: u8,
     ie_register: u8, // Single byte for interrupts
     serial_data: u8,
     serial_control: u8,
@@ -32,6 +33,7 @@ impl Mmu {
             vram: [0; 0x2000],
             wram: [0; 0x2000],
             hram: [0; 0x7F],
+            if_register: 0,
             ie_register: 0,
             serial_data: 0,
             serial_control: 0,
@@ -57,6 +59,9 @@ impl Mmu {
 
             0xFF01 => self.serial_data,
             0xFF02 => self.serial_control,
+
+            0xFF0F => self.if_register | 0xE0, // Top 3 bits permanently set to 1
+            0xFFFF => self.ie_register,
 
             // High RAM (HRAM)
             0xFF80..=0xFFFE => {
@@ -93,9 +98,7 @@ impl Mmu {
                 self.serial_data = val;
             }
             0xFF02 => {
-                self.serial_control = val;
                 if val == 0x81 {
-                    let char_data = self.serial_data as char;
                     print!("{}", self.serial_data as char);
 
                     // Flush stdout so the text appears in your terminal immediately
@@ -103,6 +106,9 @@ impl Mmu {
                     std::io::stdout().flush().unwrap();
                 }
             }
+
+            0xFF0F => self.if_register = val,
+            0xFFFF => self.ie_register = val,
 
             // High RAM (HRAM)
             0xFF80..=0xFFFE => {
