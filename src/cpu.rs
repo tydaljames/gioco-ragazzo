@@ -177,7 +177,8 @@ impl Cpu {
             if (ie & if_reg & 0x1F) != 0 {
                 self.halted = false;
             } else {
-                return 4; // Keep sleeping
+                self.mmu.tick(4); // Keep timers running during HALT sleep
+                return 4;
             }
         }
 
@@ -190,20 +191,13 @@ impl Cpu {
             if requested != 0 {
                 for i in 0..5 {
                     if (requested & (1 << i)) != 0 {
-                        // Disable master interrupts
                         self.ime = false;
-
-                        // Clear the specific interrupt flag we are servicing
                         if_reg &= !(1 << i);
                         self.mmu.write_byte(0xFF0F, if_reg);
-
-                        // Push current PC to stack
                         self.stack_push(self.pc);
-
-                        // Jump to the interrupt vector (0x40, 0x48, 0x50, 0x58, 0x60)
                         self.pc = 0x0040 + (i as u16 * 8);
 
-                        // Servicing an interrupt consumes 20 cycles
+                        self.mmu.tick(20); // Keep timers running during interrupt overhead
                         return 20;
                     }
                 }
@@ -215,7 +209,10 @@ impl Cpu {
         self.pc = self.pc.wrapping_add(1);
         let cycles = self.execute(opcode);
 
-        // 4. DELAYED IME ENABLE
+        // 4. ADVANCE TIMERS BY THE CONSUMED T-CYCLES
+        self.mmu.tick(cycles);
+
+        // 5. DELAYED IME ENABLE
         if self.enabling_ime {
             self.ime = true;
             self.enabling_ime = false;
@@ -243,7 +240,7 @@ impl Cpu {
             1 => {
                 // SPECIAL: Halt instruction. Has a known bug in actual hardware. May need to review later!
                 if y == 6 && z == 6 {
-                    print!("HALT. y = 6, z = 6");
+                    // print!("HALT. y = 6, z = 6");
                     self.halted = true;
                     return 4;
                 }
