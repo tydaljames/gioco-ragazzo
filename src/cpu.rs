@@ -753,21 +753,68 @@ impl Cpu {
 
         match x {
             // xx == 00: Rotations and shifts. Use "y" to determine which specific shift.
+            // xx == 00: Rotations and shifts. Use "y" to determine which specific shift.
             0 => {
+                match y {
+                    0 => { // RLC (Rotate Left Circular)
+                        let carry = (value & 0x80) >> 7;
+                        value = (value << 1) | carry;
+                        self.registers.set_carry_flag(carry == 1);
+                    }
+                    1 => { // RRC (Rotate Right Circular)
+                        let carry = value & 0x01;
+                        value = (value >> 1) | (carry << 7);
+                        self.registers.set_carry_flag(carry == 1);
+                    }
+                    2 => { // RL (Rotate Left through Carry)
+                        let old_carry = if self.registers.get_carry_flag() { 1 } else { 0 };
+                        let new_carry = (value & 0x80) >> 7;
+                        value = (value << 1) | old_carry;
+                        self.registers.set_carry_flag(new_carry == 1);
+                    }
+                    3 => { // RR (Rotate Right through Carry)
+                        let old_carry = if self.registers.get_carry_flag() { 1 } else { 0 };
+                        let new_carry = value & 0x01;
+                        value = (value >> 1) | (old_carry << 7);
+                        self.registers.set_carry_flag(new_carry == 1);
+                    }
+                    4 => { // SLA (Shift Left Arithmetic)
+                        // Shift left, bit 0 becomes 0
+                        let carry = (value & 0x80) >> 7;
+                        value = value << 1;
+                        self.registers.set_carry_flag(carry == 1);
+                    }
+                    5 => { // SRA (Shift Right Arithmetic)
+                        // Shift right, but keep bit 7 unchanged (sign extension)
+                        let carry = value & 0x01;
+                        let msb = value & 0x80;
+                        value = (value >> 1) | msb;
+                        self.registers.set_carry_flag(carry == 1);
+                    }
+                    6 => { // SWAP (Swap upper and lower nibbles)
+                        let upper = value & 0xF0;
+                        let lower = value & 0x0F;
+                        value = (lower << 4) | (upper >> 4);
+                        self.registers.set_carry_flag(false); // SWAP always clears carry
+                    }
+                    7 => { // SRL (Shift Right Logical)
+                        // Shift right, bit 7 becomes 0
+                        let carry = value & 0x01;
+                        value = value >> 1;
+                        self.registers.set_carry_flag(carry == 1);
+                    }
+                    _ => unreachable!(),
+                }
 
+                // All x=0 CB opcodes share these exact flag rules:
+                self.registers.set_zero_flag(value == 0);
+                self.registers.set_sub_flag(false);
+                self.registers.set_half_carry_flag(false);
 
-                // Come back later!
+                // Write the modified value back to the register (or memory at HL)
+                self.write_reg_8bit(z, value);
 
-                // self.registers.set_zero_flag(value == 0);
-                // self.registers.set_sub_flag(false);
-                // self.registers.set_half_carry_flag(false);
-                //
-                // // Unset if SWAP
-                // self.registers.set_carry_flag(value == 0);
-
-
-
-                if z == 6 {16} else {8}
+                if z == 6 { 16 } else { 8 }
             }
 
             // xx == 01: BIT b, r (test bit 'y' of register 'z')

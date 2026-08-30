@@ -10,7 +10,7 @@ fn main() {
 
     // 1. Load the ROM file
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/01-special.gb").expect("Failed to load ROM!");
-    // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/02-interrupts.gb").expect("Failed to load ROM!");
+    let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/02-interrupts.gb").expect("Failed to load ROM!");
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/03-op sp,hl.gb").expect("Failed to load ROM!");
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/04-op r,imm.gb").expect("Failed to load ROM!");
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/05-op rp.gb").expect("Failed to load ROM!");
@@ -19,7 +19,7 @@ fn main() {
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/08-misc instrs.gb").expect("Failed to load ROM!");
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/09-op r,r.gb").expect("Failed to load ROM!");
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/10-bit ops.gb").expect("Failed to load ROM!");
-    let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/11-op a,(hl).gb").expect("Failed to load ROM!");
+    // let cartridge = Cartridge::load("roms/gb-test-roms-master/cpu_instrs/individual/11-op a,(hl).gb").expect("Failed to load ROM!");
 
     // 2. Initialize the hardware
     let mmu = Mmu::new(cartridge);
