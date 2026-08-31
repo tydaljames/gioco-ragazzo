@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use crate::ppu::Ppu;
 
 pub struct Cartridge {
     pub rom: Vec<u8>
@@ -16,6 +17,7 @@ impl Cartridge {
 
 pub struct Mmu {
     cartridge: Cartridge,
+    pub ppu: Ppu,
     vram: [u8; 0x2000], // 8,196 bytes/ 8 KB video RAM
     wram: [u8; 0x2000], // 8 KB working RAM
     hram: [u8; 0x7F], // 127 bytes of high-ram (fast CPU operations)
@@ -29,6 +31,12 @@ pub struct Mmu {
     pub tma: u8,
     pub tac: u8,
     pub tima_counter: i32,
+
+    // MBC1 State
+    pub rom_bank: usize,         // Current active ROM bank (defaults to 1)
+    pub ram_bank: usize,         // Current active external RAM bank
+    pub banking_mode: u8,        // 0 = ROM mode, 1 = RAM mode
+    pub ram_enabled: bool,       // Is external RAM enabled?
 }
 
 impl Mmu {
@@ -36,6 +44,7 @@ impl Mmu {
     pub fn new(cartridge: Cartridge) -> Self {
         Self {
             cartridge,
+            ppu: Ppu::new(),
             vram: [0; 0x2000],
             wram: [0; 0x2000],
             hram: [0; 0x7F],
@@ -49,19 +58,48 @@ impl Mmu {
             tma: 0,
             tac: 0,
             tima_counter: 0,
+
+            // MBC1
+            rom_bank: 1, // Bank 0 is fixed at the start, Bank 1 is the default switchable bank
+            ram_bank: 0,
+            banking_mode: 0,
+            ram_enabled: false,
         }
     }
 
     pub fn read_byte(&self, addr: u16) -> u8 {
         match addr {
-            // Ignore write attempts to ROM
-            0x0000..=0x7FFF => self.cartridge.rom[addr as usize],
-
-            // Video RAM (VRAM)
-            0x8000..=0x9FFF => {
-                let index = (addr - 0x8000) as usize;
-                self.vram[index]
+            0x0000..=0x3FFF => {
+                // ROM Bank 0 (Fixed to bank 0, unless in advanced RAM banking mode)
+                let bank = if self.banking_mode == 1 {
+                    (self.rom_bank & 0x60) // In mode 1, upper bits can affect bank 0
+                } else {
+                    0
+                };
+                let mapped_addr = (bank * 0x4000) + (addr as usize);
+                self.cartridge.rom.get(mapped_addr).copied().unwrap_or(0xFF)
             }
+            0x4000..=0x7FFF => {
+                // Switchable ROM Bank
+                let mapped_addr = (self.rom_bank * 0x4000) + (addr as usize - 0x4000);
+                self.cartridge.rom.get(mapped_addr).copied().unwrap_or(0xFF)
+            }
+
+            // PPU memory (Graphics)
+            0x8000..=0x9FFF => self.ppu.vram[addr as usize - 0x8000],
+            0xFE00..=0xFE9F => self.ppu.oam[addr as usize - 0xFE00],
+            0xFF40 => self.ppu.lcdc,
+            0xFF41 => self.ppu.stat | 0x80, // Top bit of STAT is always 1
+            0xFF42 => self.ppu.scy,
+            0xFF43 => self.ppu.scx,
+            0xFF44 => self.ppu.ly,
+            0xFF45 => self.ppu.lyc,
+            0xFF46 => self.ppu.dma,
+            0xFF47 => self.ppu.bgp,
+            0xFF48 => self.ppu.obp0,
+            0xFF49 => self.ppu.obp1,
+            0xFF4A => self.ppu.wy,
+            0xFF4B => self.ppu.wx,
 
             // Work RAM (WRAM)
             0xC000..=0xDFFF => {
@@ -95,14 +133,50 @@ impl Mmu {
 
     pub fn write_byte(&mut self, addr: u16, val: u8) {
         match addr {
-            // Ignore write attempts to ROM
-            0x0000..=0x7FFF => {},
-
-            // Video RAM (VRAM)
-            0x8000..=0x9FFF => {
-                let index = (addr - 0x8000) as usize;
-                self.vram[index] = val;
+            0x0000..=0x1FFF => {
+                // RAM Enable: Writing 0x0A to this range enables external RAM
+                self.ram_enabled = (val & 0x0F) == 0x0A;
             }
+            0x2000..=0x3FFF => {
+                // ROM Bank Number (Lower 5 bits)
+                let mut bank = (val & 0x1F) as usize;
+                if bank == 0 {
+                    bank = 1; // Bank 0 cannot be selected here; it maps to Bank 1
+                }
+                // Keep the upper bits intact, update the lower 5 bits
+                self.rom_bank = (self.rom_bank & 0x60) | bank;
+            }
+            0x4000..=0x5FFF => {
+                // Upper 2 bits of ROM Bank Number (or RAM Bank Number depending on mode)
+                let bits = (val & 0x03) as usize;
+                if self.banking_mode == 0 {
+                    // ROM Mode: bits are the upper 2 bits of the ROM bank
+                    self.rom_bank = (self.rom_bank & 0x1F) | (bits << 5);
+                } else {
+                    // RAM Mode: bits select the external RAM bank
+                    self.ram_bank = bits;
+                }
+            }
+            0x6000..=0x7FFF => {
+                // Banking Mode Select (0 = ROM banking mode, 1 = RAM banking mode)
+                self.banking_mode = val & 0x01;
+            }
+
+            // PPU memory (Graphics)
+            0x8000..=0x9FFF => self.ppu.vram[addr as usize - 0x8000] = val,
+            0xFE00..=0xFE9F => self.ppu.oam[addr as usize - 0xFE00] = val,
+            0xFF40 => self.ppu.lcdc = val,
+            0xFF41 => self.ppu.stat = (self.ppu.stat & 0x07) | (val & 0xF8), // Lower 3 bits are read-only
+            0xFF42 => self.ppu.scy = val,
+            0xFF43 => self.ppu.scx = val,
+            0xFF44 => {}, // LY is read-only, ignore writes
+            0xFF45 => self.ppu.lyc = val,
+            0xFF46 => self.ppu.dma = val, // We will implement DMA next!
+            0xFF47 => self.ppu.bgp = val,
+            0xFF48 => self.ppu.obp0 = val,
+            0xFF49 => self.ppu.obp1 = val,
+            0xFF4A => self.ppu.wy = val,
+            0xFF4B => self.ppu.wx = val,
 
             // Work RAM (WRAM)
             0xC000..=0xDFFF => {
@@ -200,5 +274,10 @@ impl Mmu {
                 }
             }
         }
+        // Tick the PPU and capture any requested interrupts
+        let ppu_interrupts = self.ppu.tick(cycles);
+
+        // If the PPU requested a VBlank (bit 0) or STAT (bit 1) interrupt, apply it to IF
+        self.if_register |= ppu_interrupts;
     }
 }
