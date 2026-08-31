@@ -171,8 +171,14 @@ impl Mmu {
             0xFF43 => self.ppu.scx = val,
             0xFF44 => {}, // LY is read-only, ignore writes
             0xFF45 => self.ppu.lyc = val,
-            0xFF46 => self.ppu.dma = val, // We will implement DMA next!
-            0xFF47 => self.ppu.bgp = val,
+            0xFF46 => {
+                self.ppu.dma = val;
+                let source_base = (val as u16) << 8;
+                for i in 0..160 {
+                    let b = self.read_byte(source_base + i);
+                    self.ppu.oam[i as usize] = b;
+                }
+            }            0xFF47 => self.ppu.bgp = val,
             0xFF48 => self.ppu.obp0 = val,
             0xFF49 => self.ppu.obp1 = val,
             0xFF4A => self.ppu.wy = val,

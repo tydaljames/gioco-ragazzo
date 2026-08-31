@@ -16,7 +16,9 @@ pub struct Ppu {
     pub wx: u8,   // 0xFF4B - Window X
 
     // Internal timing
-    dots: u32
+    dots: u32,
+
+    pub framebuffer: [u32; 160 * 144],
 }
 
 impl Ppu {
@@ -30,13 +32,10 @@ impl Ppu {
             bgp: 0xFC, obp0: 0xFF, obp1: 0xFF,
             wy: 0, wx: 0,
             dots: 0,
+
+            framebuffer: [0; 160 * 144],
         }
     }
-}
-
-impl Ppu {
-    // ... new() function ...
-
     // Returns a u8 representing requested interrupts (Bit 0 for VBlank, Bit 1 for STAT)
     pub fn tick(&mut self, cycles: u8) -> u8 {
         let mut interrupts = 0;
@@ -89,6 +88,11 @@ impl Ppu {
         if current_mode != new_mode {
             self.stat = (self.stat & 0xFC) | new_mode;
 
+            // ADD THIS: Render the scanline right as Pixel Transfer (Mode 3) begins
+            if new_mode == 3 && self.ly < 144 {
+                self.render_scanline();
+            }
+
             if new_mode == 1 {
                 interrupts |= 0x01; // Request VBlank Interrupt
 
@@ -103,5 +107,61 @@ impl Ppu {
         }
 
         interrupts
+    }
+    pub fn render_scanline(&mut self) {
+        let y = self.ly as usize;
+        if y >= 144 { return; }
+
+        // Determine Tile Map base address (LCDC Bit 3)
+        let tile_map_base = if (self.lcdc & 0x08) != 0 { 0x1C00 } else { 0x1800 };
+
+        // Determine Tile Data addressing mode (LCDC Bit 4) using a local boolean
+        let unsigned_tiles = (self.lcdc & 0x10) != 0;
+
+        for x in 0..160_usize {
+            let map_x = (x.wrapping_add(self.scx as usize)) & 255;
+            let map_y = (y.wrapping_add(self.scy as usize)) & 255;
+
+            // Find tile coordinates (0-31)
+            let tile_x = map_x / 8;
+            let tile_y = map_y / 8;
+            let tile_offset = tile_map_base + tile_y * 32 + tile_x;
+            let tile_index = self.vram[tile_offset];
+
+            // Find tile data address in VRAM based on the addressing mode
+            let tile_data_addr = if unsigned_tiles {
+                // Unsigned: 0x8000 base (vram index 0x0000)
+                (tile_index as usize) * 16
+            } else {
+                // Signed: 0x8800 base (vram index 0x0800, index is treated as i8)
+                let signed_index = tile_index as i8 as i32;
+                (0x0800 + signed_index * 16) as usize
+            };
+
+            // Find row within the tile (0-7)
+            let row = map_y % 8;
+            let byte1 = self.vram[tile_data_addr + row * 2];
+            let byte2 = self.vram[tile_data_addr + row * 2 + 1];
+
+            // Extract bit for this pixel (pixels are ordered bit 7 down to bit 0)
+            let bit = 7 - (map_x % 8);
+            let color_bit1 = (byte1 >> bit) & 1;
+            let color_bit2 = (byte2 >> bit) & 1;
+            let color_id = (color_bit2 << 1) | color_bit1;
+
+            // Map color ID (0-3) using BGP palette register
+            let palette_color = (self.bgp >> (color_id * 2)) & 0x03;
+
+            // Convert Game Boy shade to an RGB color
+            let rgb = match palette_color {
+                0 => 0xFF9BBC0F, // Lightest green
+                1 => 0xFF8BAC0F,
+                2 => 0xFF306230,
+                _ => 0xFF0F380F, // Darkest green
+            };
+
+            // Store in framebuffer
+            self.framebuffer[y * 160 + x] = rgb;
+        }
     }
 }
