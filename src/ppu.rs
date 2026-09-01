@@ -19,6 +19,7 @@ pub struct Ppu {
     dots: u32,
 
     pub framebuffer: [u32; 160 * 144],
+    window_line: u8,
 }
 
 impl Ppu {
@@ -34,6 +35,7 @@ impl Ppu {
             dots: 0,
 
             framebuffer: [0; 160 * 144],
+            window_line: 0,
         }
     }
     // Returns a u8 representing requested interrupts (Bit 0 for VBlank, Bit 1 for STAT)
@@ -112,15 +114,47 @@ impl Ppu {
         let y = self.ly as usize;
         if y >= 144 { return; }
 
-        // Determine Tile Map base address (LCDC Bit 3)
-        let tile_map_base = if (self.lcdc & 0x08) != 0 { 0x1C00 } else { 0x1800 };
+        // Reset window line counter at the top of the frame
+        if y == 0 {
+            self.window_line = 0;
+        }
 
-        // Determine Tile Data addressing mode (LCDC Bit 4) using a local boolean
+        // Determine Tile Data addressing mode (LCDC Bit 4)
         let unsigned_tiles = (self.lcdc & 0x10) != 0;
 
+        // Window parameters
+        let window_enabled = (self.lcdc & 0x20) != 0;
+        let wy = self.wy as usize;
+        let wx = self.wx as usize;
+        let rendering_window = window_enabled && y >= wy && wx <= 166;
+
+        let mut window_drawn_this_line = false;
+
         for x in 0..160_usize {
-            let map_x = (x.wrapping_add(self.scx as usize)) & 255;
-            let map_y = (y.wrapping_add(self.scy as usize)) & 255;
+            let mut use_window = false;
+
+            if rendering_window {
+                // WX specifies screen X + 7. Window pixel starts at WX - 7.
+                let wx_start = if wx >= 7 { wx - 7 } else { 0 };
+                if x >= wx_start {
+                    use_window = true;
+                }
+            }
+
+            let (map_x, map_y, tile_map_base) = if use_window {
+                window_drawn_this_line = true;
+                // Window uses its own tile map base (LCDC Bit 6, 0x40)
+                let w_map_base = if (self.lcdc & 0x40) != 0 { 0x1C00 } else { 0x1800 };
+                let wx_start = if wx >= 7 { wx - 7 } else { 0 };
+                let win_x_pixel = x - wx_start;
+                (win_x_pixel, self.window_line as usize, w_map_base)
+            } else {
+                // Background uses tile map base (LCDC Bit 3, 0x08)
+                let bg_map_base = if (self.lcdc & 0x08) != 0 { 0x1C00 } else { 0x1800 };
+                let bg_x = (x.wrapping_add(self.scx as usize)) & 255;
+                let bg_y = (y.wrapping_add(self.scy as usize)) & 255;
+                (bg_x, bg_y, bg_map_base)
+            };
 
             // Find tile coordinates (0-31)
             let tile_x = map_x / 8;
@@ -130,10 +164,10 @@ impl Ppu {
 
             // Find tile data address in VRAM based on the addressing mode
             let tile_data_addr = if unsigned_tiles {
-                // Unsigned: 0x8000 base (vram index 0x0000)
+                // Unsigned: 0x8000 base
                 (tile_index as usize) * 16
             } else {
-                // Signed: 0x9000 base (vram index 0x1000, index is treated as i8)
+                // Signed: 0x9000 base
                 let signed_index = tile_index as i8 as i32;
                 (0x1000 as i32 + signed_index * 16) as usize
             };
@@ -143,7 +177,7 @@ impl Ppu {
             let byte1 = self.vram[tile_data_addr + row * 2];
             let byte2 = self.vram[tile_data_addr + row * 2 + 1];
 
-            // Extract bit for this pixel (pixels are ordered bit 7 down to bit 0)
+            // Extract bit for this pixel
             let bit = 7 - (map_x % 8);
             let color_bit1 = (byte1 >> bit) & 1;
             let color_bit2 = (byte2 >> bit) & 1;
@@ -154,16 +188,21 @@ impl Ppu {
 
             // Convert Game Boy shade to an RGB color
             let rgb = match palette_color {
-                0 => 0xFF9BBC0F, // Lightest green
+                0 => 0xFF9BBC0F,
                 1 => 0xFF8BAC0F,
                 2 => 0xFF306230,
-                _ => 0xFF0F380F, // Darkest green
+                _ => 0xFF0F380F,
             };
 
             // Store in framebuffer
             self.framebuffer[y * 160 + x] = rgb;
-
         }
+
+        // Advance the window internal line counter if the window was visible on this line
+        if window_drawn_this_line {
+            self.window_line = self.window_line.wrapping_add(1);
+        }
+
         self.render_sprites();
     }
 

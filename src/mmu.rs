@@ -420,7 +420,29 @@ impl Mmu {
         self.if_register |= ppu_interrupts;
     }
 
-    pub fn update_joypad(&mut self, state: u8) {
-        self.joypad_state = state;
+    pub fn update_joypad(&mut self, new_state: u8) {
+        // Game Boy buttons are active-low (0 = pressed, 1 = unpressed)
+        // Detect buttons that just went from unpressed (1) to pressed (0)
+        let newly_pressed = !new_state & self.joypad_state;
+
+        if newly_pressed != 0 {
+            let select_dir = (self.joypad_select & 0x10) == 0;
+            let select_btn = (self.joypad_select & 0x20) == 0;
+
+            let dir_pressed = (newly_pressed & 0x0F) != 0;
+            let btn_pressed = ((newly_pressed >> 4) & 0x0F) != 0;
+
+            if (select_dir && dir_pressed) || (select_btn && btn_pressed) || (self.joypad_select & 0x30) == 0x30 {
+                // Request Joypad Interrupt (Bit 4 of Interrupt Flag 0xFF0F)
+                let if_val = self.read_byte(0xFF0F);
+                self.write_byte(0xFF0F, if_val | 0x10);
+            }
+        }
+
+        self.joypad_state = new_state;
     }
+
+    // pub fn update_joypad(&mut self, state: u8) {
+    //     self.joypad_state = state;
+    // }
 }
