@@ -1,3 +1,4 @@
+use std::path::Path;
 use minifb::{Key, Window, WindowOptions};
 use crate::cpu::Cpu;
 use crate::mmu::{Cartridge, Mmu};
@@ -22,18 +23,24 @@ fn main() {
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/oam_bug/oam_bug.gb").expect("Failed to load ROM!");
 
     // Real ROMs
+    let path = "roms/Tetris (JUE) (V1.1) [!].gb";
     // let cartridge = Cartridge::load("roms/Pokemon Red.gb").expect("Failed to load ROM!");
-    let cartridge = Cartridge::load("roms/Tetris (JUE) (V1.1) [!].gb").expect("Failed to load ROM!");
+
+
+    let file_name = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Unknown Game");
+    let title = format!("Gioco Ragazzo - {}", file_name);
+    let cartridge = Cartridge::load(path).expect("Failed to load ROM!");
 
     // 2. Initialize the hardware
     let mmu = Mmu::new(cartridge);
     let mut cpu = Cpu::new(mmu);
 
-
-
     // 3. Initialize the Display Window (Scaled 4x for a comfortable viewing size)
     let mut window = Window::new(
-        "Rust Game Boy Emulator - Tetris",
+        &title,
         160,
         144,
         WindowOptions {
@@ -48,6 +55,21 @@ fn main() {
 
     // 4. The Visual Execution Loop
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        // --- 5. Capture Keyboard Inputs via Minifb ---
+        let mut joypad_bits = 0xFF; // 0xFF means all buttons unpressed
+
+        if window.is_key_down(Key::D) { joypad_bits &= !(1 << 0); }
+        if window.is_key_down(Key::A)  { joypad_bits &= !(1 << 1); }
+        if window.is_key_down(Key::W)    { joypad_bits &= !(1 << 2); }
+        if window.is_key_down(Key::S)  { joypad_bits &= !(1 << 3); }
+        if window.is_key_down(Key::L)     { joypad_bits &= !(1 << 4); } // A
+        if window.is_key_down(Key::K)     { joypad_bits &= !(1 << 5); } // B
+        if window.is_key_down(Key::Space) { joypad_bits &= !(1 << 6); } // Select
+        if window.is_key_down(Key::Enter) { joypad_bits &= !(1 << 7); } // Start
+
+        // Send button states to the MMU
+        cpu.mmu.update_joypad(joypad_bits);
+
         let mut cycles_this_frame = 0;
 
         // Run the CPU/PPU until a full frame (~70,224 T-cycles) has passed
@@ -61,7 +83,7 @@ fn main() {
             cycles_this_frame += cycles as u32;
         }
 
-        // 5. Push the PPU framebuffer to the window screen buffer
+        // 6. Push the PPU framebuffer to the window screen buffer
         window
             .update_with_buffer(
                 &cpu.mmu.ppu.framebuffer,

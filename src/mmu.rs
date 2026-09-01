@@ -37,6 +37,9 @@ pub struct Mmu {
     pub ram_bank: usize,         // Current active external RAM bank
     pub banking_mode: u8,        // 0 = ROM mode, 1 = RAM mode
     pub ram_enabled: bool,       // Is external RAM enabled?
+
+    pub joypad_select: u8,
+    pub joypad_state: u8,
 }
 
 impl Mmu {
@@ -64,6 +67,9 @@ impl Mmu {
             ram_bank: 0,
             banking_mode: 0,
             ram_enabled: false,
+
+            joypad_select: 0x30,
+            joypad_state: 0xFF, // All buttons unpressed by default
         }
     }
 
@@ -105,6 +111,26 @@ impl Mmu {
             0xC000..=0xDFFF => {
                 let index = (addr - 0xC000) as usize;
                 self.wram[index]
+            }
+
+            0xFF00 => {
+                // Bits 6-7 are always 1. Bits 4-5 reflect whatever the game wrote to select lines.
+                let mut selected_buttons = 0x0F; // Default to all unpressed (1s)
+
+                let select_directions = (self.joypad_select & 0x10) == 0;
+                let select_actions    = (self.joypad_select & 0x20) == 0;
+
+                // If direction keys are selected, filter by lower nibble
+                if select_directions {
+                    selected_buttons &= self.joypad_state & 0x0F;
+                }
+                // If action keys are selected, filter by upper nibble (shifted down)
+                if select_actions {
+                    selected_buttons &= (self.joypad_state >> 4) & 0x0F;
+                }
+
+                // Combine: Upper 2 bits (11) + Selection bits (bits 4-5) + Button state (bits 0-3)
+                0xC0 | self.joypad_select | selected_buttons
             }
 
             0xFF01 => self.serial_data,
@@ -188,6 +214,11 @@ impl Mmu {
             0xC000..=0xDFFF => {
                 let index = (addr - 0xC000) as usize;
                 self.wram[index] = val;
+            }
+
+            0xFF00 => {
+                // The game writes to bits 4 and 5 to select which button group to read
+                self.joypad_select = val & 0x30;
             }
 
             // Intercept Serial Output for Blargg's Tests
@@ -285,5 +316,9 @@ impl Mmu {
 
         // If the PPU requested a VBlank (bit 0) or STAT (bit 1) interrupt, apply it to IF
         self.if_register |= ppu_interrupts;
+    }
+
+    pub fn update_joypad(&mut self, state: u8) {
+        self.joypad_state = state;
     }
 }
