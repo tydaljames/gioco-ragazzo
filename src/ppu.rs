@@ -133,9 +133,9 @@ impl Ppu {
                 // Unsigned: 0x8000 base (vram index 0x0000)
                 (tile_index as usize) * 16
             } else {
-                // Signed: 0x8800 base (vram index 0x0800, index is treated as i8)
+                // Signed: 0x9000 base (vram index 0x1000, index is treated as i8)
                 let signed_index = tile_index as i8 as i32;
-                (0x0800 + signed_index * 16) as usize
+                (0x1000 as i32 + signed_index * 16) as usize
             };
 
             // Find row within the tile (0-7)
@@ -163,8 +163,8 @@ impl Ppu {
             // Store in framebuffer
             self.framebuffer[y * 160 + x] = rgb;
 
-            self.render_sprites();
         }
+        self.render_sprites();
     }
 
     pub fn render_sprites(&mut self) {

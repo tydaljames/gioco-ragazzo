@@ -1,9 +1,22 @@
 use std::fs;
 use std::path::Path;
+use crate::mmu;
 use crate::ppu::Ppu;
 
 pub struct Cartridge {
-    pub rom: Vec<u8>
+    pub rom: Vec<u8>,
+    pub sram: Vec<[u8; 0x2000]>, // Up to 4 SRAM banks (8KB each)
+
+    // MBC State
+    pub mbc_type: MbcType,
+    pub rom_bank: usize,
+    pub sram_bank: usize,
+    pub sram_enabled: bool,
+
+    // MBC3 RTC Registers (Seconds, Minutes, Hours, Days Low, Days High)
+    pub rtc_registers: [u8; 5],
+    pub rtc_selected_reg: u8,
+    pub rtc_latch_register: u8,
 }
 
 impl Cartridge {
@@ -11,8 +24,54 @@ impl Cartridge {
     // and return a Result. If successful, gives us a Cartridge
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
         let rom = fs::read(path)?;
-        Ok(Self { rom })
+
+        if rom.len() < 0x0150 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ROM file is too small to contain a valid header",
+            ));
+        }
+
+        // 1. Determine MBC Types from header byte 0x0147
+        let cartridge_type = rom[0x0147];
+        let mbc_type = match cartridge_type {
+            0x01 | 0x02 | 0x03 => MbcType::Mbc1,
+            0x0F | 0x10 | 0x11 | 0x12 | 0x13 => MbcType::Mbc3,
+            _ => MbcType::RomOnly,
+        };
+
+        // 2. Determine SRAM size from header byte 0x0149
+        // 0x03 is used by Pokemon Red/ Blue, with 32KB (4 banks of 8KB) SRAM
+        let ram_size_byte = rom[0x0149];
+        let sram_bank_count = match ram_size_byte {
+            0x02 => 1, // 8KB (1 bank)
+            0x03 => 4, // 32KB (4 banks)
+            0x04 => 16, // 128KB (16 banks)
+            _ => 0
+        };
+
+        // Initialize SRAM storage
+        let sram = vec![[0; 0x2000]; sram_bank_count];
+
+        Ok(Self {
+            rom,
+            sram,
+            mbc_type,
+            rom_bank: 1, // Bank 0 is fixed, 1 is switchable
+            sram_bank: 0,
+            sram_enabled: false,
+            rtc_registers: [0; 5],
+            rtc_selected_reg: 0xFF,
+            rtc_latch_register: 0xFF,
+        })
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MbcType {
+    RomOnly,
+    Mbc1,
+    Mbc3,
 }
 
 pub struct Mmu {
@@ -76,19 +135,32 @@ impl Mmu {
     pub fn read_byte(&self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x3FFF => {
-                // ROM Bank 0 (Fixed to bank 0, unless in advanced RAM banking mode)
-                let bank = if self.banking_mode == 1 {
-                    (self.rom_bank & 0x60) // In mode 1, upper bits can affect bank 0
-                } else {
-                    0
-                };
+                let bank = if self.banking_mode == 1 { self.rom_bank & 0x60 } else { 0 };
                 let mapped_addr = (bank * 0x4000) + (addr as usize);
                 self.cartridge.rom.get(mapped_addr).copied().unwrap_or(0xFF)
             }
             0x4000..=0x7FFF => {
-                // Switchable ROM Bank
-                let mapped_addr = (self.rom_bank * 0x4000) + (addr as usize - 0x4000);
+                let active_bank = if self.cartridge.mbc_type == crate::mmu::MbcType::Mbc3 && self.rom_bank == 0 {
+                    1
+                } else {
+                    self.rom_bank
+                };
+                let mapped_addr = (active_bank * 0x4000) + (addr as usize - 0x4000);
                 self.cartridge.rom.get(mapped_addr).copied().unwrap_or(0xFF)
+            }
+
+            // External SRAM & RTC Registers ($A000 - $BFFF)
+            0xA000..=0xBFFF => {
+                if !(self.cartridge.sram_enabled || self.ram_enabled) { return 0xFF; }
+
+                if self.cartridge.mbc_type == crate::mmu::MbcType::Mbc3
+                    && (0x08..=0x0C).contains(&self.cartridge.rtc_selected_reg)
+                {
+                    return self.cartridge.rtc_registers[(self.cartridge.rtc_selected_reg - 0x08) as usize];
+                }
+
+                let bank = if self.cartridge.mbc_type == crate::mmu::MbcType::Mbc3 { self.cartridge.sram_bank } else { self.ram_bank };
+                self.cartridge.sram.get(bank).map_or(0xFF, |s| s[(addr - 0xA000) as usize])
             }
 
             // PPU memory (Graphics)
@@ -159,33 +231,63 @@ impl Mmu {
 
     pub fn write_byte(&mut self, addr: u16, val: u8) {
         match addr {
-            0x0000..=0x1FFF => {
-                // RAM Enable: Writing 0x0A to this range enables external RAM
-                self.ram_enabled = (val & 0x0F) == 0x0A;
-            }
-            0x2000..=0x3FFF => {
-                // ROM Bank Number (Lower 5 bits)
-                let mut bank = (val & 0x1F) as usize;
-                if bank == 0 {
-                    bank = 1; // Bank 0 cannot be selected here; it maps to Bank 1
-                }
-                // Keep the upper bits intact, update the lower 5 bits
-                self.rom_bank = (self.rom_bank & 0x60) | bank;
-            }
-            0x4000..=0x5FFF => {
-                // Upper 2 bits of ROM Bank Number (or RAM Bank Number depending on mode)
-                let bits = (val & 0x03) as usize;
-                if self.banking_mode == 0 {
-                    // ROM Mode: bits are the upper 2 bits of the ROM bank
-                    self.rom_bank = (self.rom_bank & 0x1F) | (bits << 5);
+            0x0000..=0x7FFF => {
+                if self.cartridge.mbc_type == MbcType::Mbc3 {
+                    match addr {
+                        0x0000..=0x1FFF => self.cartridge.sram_enabled = (val & 0x0F) == 0x0A,
+                        0x2000..=0x3FFF => {
+                            let mut bank = (val & 0x7F) as usize;
+                            if bank == 0 { bank = 1; }
+                            self.rom_bank = bank;
+                        }
+                        0x4000..=0x5FFF => {
+                            if val <= 0x03 {
+                                self.cartridge.sram_bank = val as usize;
+                                self.cartridge.rtc_selected_reg = 0xFF;
+                            } else if (0x08..=0x0C).contains(&val) {
+                                self.cartridge.rtc_selected_reg = val;
+                            }
+                        }
+                        0x6000..=0x7FFF => self.cartridge.rtc_latch_register = val,
+                        _ => {}
+                    }
                 } else {
-                    // RAM Mode: bits select the external RAM bank
-                    self.ram_bank = bits;
+                    // Original MBC1 logic preserved cleanly
+                    match addr {
+                        0x0000..=0x1FFF => self.ram_enabled = (val & 0x0F) == 0x0A,
+                        0x2000..=0x3FFF => {
+                            let mut bank = (val & 0x1F) as usize;
+                            if bank == 0 { bank = 1; }
+                            self.rom_bank = (self.rom_bank & 0x60) | bank;
+                        }
+                        0x4000..=0x5FFF => {
+                            let bits = (val & 0x03) as usize;
+                            if self.banking_mode == 0 {
+                                self.rom_bank = (self.rom_bank & 0x1F) | (bits << 5);
+                            } else {
+                                self.ram_bank = bits;
+                            }
+                        }
+                        0x6000..=0x7FFF => self.banking_mode = val & 0x01,
+                        _ => {}
+                    }
                 }
             }
-            0x6000..=0x7FFF => {
-                // Banking Mode Select (0 = ROM banking mode, 1 = RAM banking mode)
-                self.banking_mode = val & 0x01;
+
+            0xA000..=0xBFFF => {
+                if !(self.cartridge.sram_enabled || self.ram_enabled) { return; }
+
+                if self.cartridge.mbc_type == crate::mmu::MbcType::Mbc3
+                    && (0x08..=0x0C).contains(&self.cartridge.rtc_selected_reg)
+                {
+                    self.cartridge.rtc_registers[(self.cartridge.rtc_selected_reg - 0x08) as usize] = val;
+                    return;
+                }
+
+                let bank = if self.cartridge.mbc_type == crate::mmu::MbcType::Mbc3 { self.cartridge.sram_bank } else { self.ram_bank };
+                if bank < self.cartridge.sram.len() {
+                    self.cartridge.sram[bank][(addr - 0xA000) as usize] = val;
+                }
             }
 
             // PPU memory (Graphics)
