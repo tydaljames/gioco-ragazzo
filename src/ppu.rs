@@ -162,6 +162,103 @@ impl Ppu {
 
             // Store in framebuffer
             self.framebuffer[y * 160 + x] = rgb;
+
+            self.render_sprites();
+        }
+    }
+
+    pub fn render_sprites(&mut self) {
+        let y = self.ly as usize;
+        if y >= 144 { return; }
+
+        // Check if Sprites are enabled (LCDC Bit 1)
+        if (self.lcdc & 0x02) == 0 { return; }
+
+        // Determine sprite height (8x8 if LCDC Bit 2 is 0, 8x16 if 1)
+        let sprite_height = if (self.lcdc & 0x04) != 0 { 16 } else { 8 };
+
+        let mut rendered_sprites = 0;
+
+        // OAM has 40 sprites total (4 bytes each).
+        // Real hardware limits to 10 sprites per scanline.
+        for i in 0..40 {
+            if rendered_sprites >= 10 { break; }
+
+            let oam_idx = i * 4;
+            let sprite_y = self.oam[oam_idx] as i32 - 16;
+            let sprite_x = self.oam[oam_idx + 1] as i32 - 8;
+            let tile_index = self.oam[oam_idx + 2];
+            let attributes = self.oam[oam_idx + 3];
+
+            // Check if this sprite intersects the current scanline (y)
+            if (y as i32) >= sprite_y && (y as i32) < sprite_y + sprite_height {
+                rendered_sprites += 1;
+
+                let y_flip = (attributes & 0x40) != 0;
+                let x_flip = (attributes & 0x20) != 0;
+                let use_obp1 = (attributes & 0x10) != 0;
+                let bg_priority = (attributes & 0x80) != 0;
+
+                // Find which row of the tile we are drawing
+                let mut row = (y as i32 - sprite_y) as usize;
+                if y_flip {
+                    row = (sprite_height as usize) - 1 - row;
+                }
+
+                // Sprites always use 0x8000 addressing mode
+                let tile_addr = if sprite_height == 16 {
+                    let actual_tile = if row < 8 { tile_index & 0xFE } else { tile_index | 0x01 };
+                    (actual_tile as usize) * 16 + (if row < 8 { row } else { row - 8 }) * 2
+                } else {
+                    (tile_index as usize) * 16 + row * 2
+                };
+
+                let byte1 = self.vram[tile_addr];
+                let byte2 = self.vram[tile_addr + 1];
+
+                for x in 0..8_i32 {
+                    let screen_x = sprite_x + x;
+                    if screen_x < 0 || screen_x >= 160 { continue; }
+
+                    let bit = if x_flip { x } else { 7 - x };
+                    let color_bit1 = (byte1 >> bit) & 1;
+                    let color_bit2 = (byte2 >> bit) & 1;
+                    let color_id = (color_bit2 << 1) | color_bit1;
+
+                    // Color ID 0 is transparent for sprites
+                    if color_id == 0 { continue; }
+
+                    // Check background priority flag
+                    if bg_priority {
+                        // If priority is set, sprite only appears over background color 0
+                        let map_x = (screen_x as usize + self.scx as usize) & 255;
+                        let map_y = (y + self.scy as usize) & 255;
+                        let tile_map_base = if (self.lcdc & 0x08) != 0 { 0x1C00 } else { 0x1800 };
+                        let tile_offset = tile_map_base + (map_y / 8) * 32 + (map_x / 8);
+                        let t_idx = self.vram[tile_offset];
+                        let t_addr = (t_idx as usize) * 16 + (map_y % 8) * 2;
+                        let b1 = self.vram[t_addr];
+                        let b2 = self.vram[t_addr + 1];
+                        let b_bit = 7 - (map_x % 8);
+                        let bg_color_id = (((b2 >> b_bit) & 1) << 1) | ((b1 >> b_bit) & 1);
+
+                        if bg_color_id != 0 { continue; } // Hidden behind non-zero background
+                    }
+
+                    // Select object palette (OBP0 or OBP1)
+                    let palette = if use_obp1 { self.obp1 } else { self.obp0 };
+                    let palette_color = (palette >> (color_id * 2)) & 0x03;
+
+                    let rgb = match palette_color {
+                        0 => 0xFF9BBC0F,
+                        1 => 0xFF8BAC0F,
+                        2 => 0xFF306230,
+                        _ => 0xFF0F380F,
+                    };
+
+                    self.framebuffer[y * 160 + screen_x as usize] = rgb;
+                }
+            }
         }
     }
 }

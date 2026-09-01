@@ -23,8 +23,9 @@ fn main() {
     // let cartridge = Cartridge::load("roms/gb-test-roms-master/oam_bug/oam_bug.gb").expect("Failed to load ROM!");
 
     // Real ROMs
-    let path = "roms/Tetris (JUE) (V1.1) [!].gb";
-    // let cartridge = Cartridge::load("roms/Pokemon Red.gb").expect("Failed to load ROM!");
+    // let path = "roms/Tetris (JUE) (V1.1) [!].gb";
+    let path = "roms/Pokemon Red.gb";
+
 
 
     let file_name = Path::new(path)
@@ -92,12 +93,4 @@ fn main() {
             )
             .unwrap();
     }
-
-
-
-
-    // // 3. The Execution Loop
-    // loop {
-    //     cpu.step();
-    // }
 }
